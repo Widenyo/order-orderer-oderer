@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>lol</title>
+  </head>
+  <body>
+    <form id="form">
+      <input name="user" type="text" id="user" placeholder="vndb user" />
+      <button type="submit">Submit</button>
+      <input type="checkbox" name="labels" value="1" /> Playing
+      <input type="checkbox" name="labels" value="2" /> Finished
+      <input type="checkbox" name="labels" value="3" /> Stalled
+      <input type="checkbox" name="labels" value="4" /> Dropped
+      <input type="checkbox" name="labels" value="5" /> Wishlist
+      <input type="checkbox" name="labels" value="6" /> Blacklist
+      <input type="checkbox" name="labels" value="7" /> Voted
+    </form>
+    <input type="file" id="fileInput" />
+    <table id="resultTable" border="1">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Difficulty</th>
+        </tr>
+      </thead>
+      <tbody id="resultBody">
+        <!-- The table body will be populated dynamically -->
+      </tbody>
+    </table>
+    <button id="exportTSV">Export to TSV</button>
+    <script>
+      const fileInput = document.getElementById("fileInput");
+      let userVinnies = [];
+      let diffList = [];
+      let vinniesOrdered = [];
+      let prevUsername = "";
+      let lastLabels = [];
+      let first = true;
+      let changedDiffList = false;
+      fileInput.addEventListener("change", () => {
+        changedDiffList = true;
+      });
+
+      document.getElementById("form").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const file = fileInput.files[0];
+        const user = document.getElementById("user").value;
+        const labels = Array.from(
+          document.querySelectorAll('input[name="labels"]:checked')
+        ).map((checkbox) => checkbox.value);
+        if (!first) {
+          if (!changedDiffList) {
+            if (
+              prevUsername === user &&
+              arraysHaveSameElements(labels, lastLabels)
+            )
+              return console.log("Nigger");
+          }
+        }
+        if (!file) return console.log("PUT A CSV LIST FIRST XD");
+        lastLabels = labels;
+        prevUsername = user;
+        first = false;
+        changedDiffList = false;
+
+        try {
+          const userResponse = await fetch(
+            `https://api.vndb.org/kana/user?q=${user}`
+          );
+          const userJson = await userResponse.json();
+          const userid = userJson[user].id;
+          let filters = ["or"];
+
+          if (labels.length) {
+            labels.forEach((i) => filters.push(["label", "=", i]));
+          } else {
+            filters = [];
+          }
+
+          const listResponse = await fetch(`https://api.vndb.org/kana/ulist`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              user: userid,
+              fields: "vn.title",
+              sort: "title",
+              results: 100,
+              filters,
+            }),
+          });
+
+          const listJson = await listResponse.json();
+          let more = listJson.more;
+          let page = 1;
+          let list = [...listJson.results];
+
+          while (more) {
+            page++;
+            const listResponseMore = await fetch(
+              `https://api.vndb.org/kana/ulist`,
+              {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  user: userid,
+                  fields: "vn.title",
+                  sort: "title",
+                  results: 100,
+                  filters,
+                  page: page,
+                }),
+              }
+            );
+
+            const listJsonMore = await listResponseMore.json();
+            list = [...list, ...listJsonMore.results];
+            more = listJsonMore.more;
+          }
+
+          const reader = new FileReader();
+
+          reader.onload = function (e) {
+            const csvData = e.target.result;
+            diffList = parseTSV(csvData);
+            compareAndOrderLists();
+          };
+
+          reader.readAsText(file);
+
+          userVinnies = list.map((el) => el.vn.title);
+        } catch (error) {
+          console.error("Error:", error);
+        }
+      });
+
+      function parseTSV(tsvData) {
+        const lines = tsvData.split("\n");
+        const header = lines[0].split("\t"); // Split by tab instead of comma
+        const tsvRows = lines.slice(1);
+
+        return tsvRows.map((row) => {
+          const values = row.split("\t"); // Split by tab instead of comma
+          const name = values
+            .slice(0, -1)
+            .join("\t")
+            .replace(/^"(.*)"$/, "$1")
+            .trim(); // Join with tabs
+          const difficulty = parseFloat(values[values.length - 1].trim(), 10);
+          return { name, difficulty };
+        });
+      }
+
+      function compareAndOrderLists() {
+        const resultArray = userVinnies
+          .map((name) => diffList.find((novel) => novel.name === name))
+          .filter((novel) => novel) // Remove undefined entries (unmatched names)
+          .sort((a, b) => a.difficulty - b.difficulty);
+
+        vinniesOrdered = resultArray;
+        updateTable();
+      }
+
+      function arraysHaveSameElements(arr1, arr2) {
+        return JSON.stringify(arr1.sort()) === JSON.stringify(arr2.sort());
+      }
+
+      document.getElementById("exportTSV").addEventListener("click", () => {
+        if (vinniesOrdered.length > 0) {
+          exportToTSV(vinniesOrdered);
+        } else {
+          console.log("No data to export.");
+        }
+      });
+
+      function exportToTSV(data) {
+        const tsvContent = data
+          .map((entry) => `${entry.name}\t${entry.difficulty}`)
+          .join("\n");
+
+        // Create a Blob and initiate a download
+        const blob = new Blob([tsvContent], {
+          type: "text/tab-separated-values",
+        });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = "exported_data.tsv";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      }
+
+      function updateTable() {
+        const resultBody = document.getElementById("resultBody");
+        // Clear existing table rows
+        resultBody.innerHTML = "";
+
+        // Append new rows based on the ordered data
+        vinniesOrdered.forEach((entry) => {
+          const row = document.createElement("tr");
+          const nameCell = document.createElement("td");
+          const difficultyCell = document.createElement("td");
+
+          nameCell.textContent = entry.name;
+          difficultyCell.textContent = entry.difficulty;
+
+          row.appendChild(nameCell);
+          row.appendChild(difficultyCell);
+
+          resultBody.appendChild(row);
+        });
+      }
+    </script>
+  </body>
+</html>
